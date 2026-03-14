@@ -302,6 +302,22 @@ export const projectApi = {
     return api.post(`/clips/${clipId}/generate-title`)
   },
 
+  // 删除切片
+  deleteClip: async (clipId: string): Promise<{message: string, clip_id: string}> => {
+    return api.delete(`/clips/${clipId}`)
+  },
+
+  // 重新提取切片
+  reExtractClip: async (clipId: string, startTime?: number, endTime?: number): Promise<{
+    success: boolean, clip_id: string, project_id: string, 
+    start_time: number, end_time: number, duration: number, message: string
+  }> => {
+    const body: any = {}
+    if (startTime !== undefined) body.start_time = startTime
+    if (endTime !== undefined) body.end_time = endTime
+    return api.post(`/clips/${clipId}/re-extract`, Object.keys(body).length > 0 ? body : undefined)
+  },
+
   // 创建合集
   createCollection: (projectId: string, collectionData: { collection_title: string, collection_summary: string, clip_ids: string[] }): Promise<Collection> => {
     return api.post(`/collections/`, {

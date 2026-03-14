@@ -77,6 +77,7 @@ interface ProjectStore {
   setLoading: (loading: boolean) => void
   setError: (error: string | null) => void
   updateClip: (projectId: string, clipId: string, updates: Partial<Clip>) => void
+  deleteClip: (projectId: string, clipId: string) => void
   updateCollection: (projectId: string, collectionId: string, updates: Partial<Collection>) => void
   addCollection: (projectId: string, collection: Collection) => void
   deleteCollection: (projectId: string, collectionId: string) => void
@@ -151,6 +152,20 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
       ? { 
           ...state.currentProject, 
           clips: (state.currentProject.clips || []).map(c => c.id === clipId ? { ...c, ...updates } : c)
+        }
+      : state.currentProject
+  })),
+
+  deleteClip: (projectId, clipId) => set((state) => ({
+    projects: state.projects.map(p => 
+      p.id === projectId 
+        ? { ...p, clips: (p.clips || []).filter(c => c.id !== clipId) }
+        : p
+    ),
+    currentProject: state.currentProject?.id === projectId
+      ? { 
+          ...state.currentProject, 
+          clips: (state.currentProject.clips || []).filter(c => c.id !== clipId)
         }
       : state.currentProject
   })),
