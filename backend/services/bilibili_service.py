@@ -424,13 +424,13 @@ class BilibiliUploadService:
             if not record:
                 logger.error(f"投稿记录不存在: {record_id}")
                 return False
-            
+
             # 获取账号信息
             account = self.db.query(BilibiliAccount).filter(BilibiliAccount.id == record.account_id).first()
             if not account:
                 logger.error(f"账号不存在: {record.account_id}")
                 return False
-            
+
             # 解密Cookie
             cookies = decrypt_data(account.cookies)
             if not cookies:
@@ -474,8 +474,8 @@ class BilibiliUploadService:
                     record.error_message = str(e)
                     record.failed_at = datetime.utcnow()
                     self.db.commit()
-            except:
-                pass
+            except Exception as db_err:
+                logger.warning(f"更新上传失败状态时出错: {db_err}")
             return False
     
     def update_upload_status(self, record_id, status: str, error_message: str = None) -> bool:
@@ -692,8 +692,8 @@ class BilibiliUploadService:
                     record.error_message = str(e)
                     record.failed_at = datetime.utcnow()
                     self.db.commit()
-            except:
-                pass
+            except Exception as db_err:
+                logger.warning(f"更新上传失败状态时出错: {db_err}")
             return False
 
 

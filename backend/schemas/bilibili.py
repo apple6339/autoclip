@@ -2,7 +2,7 @@
 B站相关Schema
 """
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional, List, Union
 from uuid import UUID
 from datetime import datetime
@@ -18,15 +18,14 @@ class BilibiliAccountCreate(BaseModel):
 
 class BilibiliAccountResponse(BaseModel):
     """B站账号响应"""
+    model_config = ConfigDict(from_attributes=True)
+    
     id: Union[int, str]  # 支持Integer和UUID
     username: str
     nickname: Optional[str]
     status: str
     is_default: bool
     created_at: datetime
-    
-    class Config:
-        from_attributes = True
 
 
 class QRLoginRequest(BaseModel):
@@ -79,17 +78,15 @@ class UploadRecordResponse(BaseModel):
     account_nickname: Optional[str] = None
     project_name: Optional[str] = None
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class UploadStatusResponse(BaseModel):
     """投稿状态响应"""
+    model_config = ConfigDict(from_attributes=True)
+    
     id: UUID
     status: str
     bvid: Optional[str]
     error_message: Optional[str]
     created_at: datetime
-    
-    class Config:
-        from_attributes = True

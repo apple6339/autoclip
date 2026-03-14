@@ -237,8 +237,8 @@ class ThumbnailGenerator:
                 # 清理临时文件
                 try:
                     temp_path.unlink()
-                except:
-                    pass
+                except OSError as unlink_err:
+                    logger.debug(f"清理临时缩略图文件失败: {unlink_err}")
                 
                 return f"data:image/jpeg;base64,{base64_data}"
             else:

@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { Card, Button, Tooltip, Modal, message } from 'antd'
-import { PlayCircleOutlined, DownloadOutlined, ClockCircleOutlined, StarFilled, EditOutlined, UploadOutlined } from '@ant-design/icons'
+import { Card, Button, Tooltip, Modal, message, Dropdown } from 'antd'
+import { PlayCircleOutlined, DownloadOutlined, ClockCircleOutlined, StarFilled, EditOutlined, DeleteOutlined, ReloadOutlined, MoreOutlined, RobotOutlined } from '@ant-design/icons'
+import type { MenuProps } from 'antd'
 import ReactPlayer from 'react-player'
 import { Clip } from '../store/useProjectStore'
+import { projectApi } from '../services/api'
 import SubtitleEditor from './SubtitleEditor'
 import { subtitleEditorApi } from '../services/subtitleEditorApi'
 import { SubtitleSegment, VideoEditOperation } from '../types/subtitle'
@@ -16,6 +18,7 @@ interface ClipCardProps {
   onDownload: (clipId: string) => void
   projectId?: string
   onClipUpdate?: (clipId: string, updates: Partial<Clip>) => void
+  onClipDelete?: (clipId: string) => void
 }
 
 const ClipCard: React.FC<ClipCardProps> = ({ 
@@ -23,13 +26,16 @@ const ClipCard: React.FC<ClipCardProps> = ({
   videoUrl, 
   onDownload,
   projectId,
-  onClipUpdate
+  onClipUpdate,
+  onClipDelete
 }) => {
   const [showPlayer, setShowPlayer] = useState(false)
   const [videoThumbnail, setVideoThumbnail] = useState<string | null>(null)
   const [showSubtitleEditor, setShowSubtitleEditor] = useState(false)
   const [subtitleData, setSubtitleData] = useState<SubtitleSegment[]>([])
   const [showBilibiliManager, setShowBilibiliManager] = useState(false)
+  const [reExtracting, setReExtracting] = useState(false)
+  const [generatingTitle, setGeneratingTitle] = useState(false)
   const playerRef = useRef<ReactPlayer>(null)
 
   // 生成视频缩略图
@@ -119,6 +125,92 @@ const ClipCard: React.FC<ClipCardProps> = ({
     // 更新本地状态
     onClipUpdate?.(clip.id, { title: newTitle })
   }
+
+  const handleDeleteClip = async () => {
+    try {
+      await projectApi.deleteClip(clip.id)
+      message.success('切片已删除')
+      onClipDelete?.(clip.id)
+    } catch (error) {
+      console.error('删除切片失败:', error)
+      message.error('删除切片失败')
+    }
+  }
+
+  const handleReExtract = async () => {
+    setReExtracting(true)
+    try {
+      const result = await projectApi.reExtractClip(clip.id)
+      if (result.success) {
+        message.success(`切片重新提取成功，时长 ${result.duration} 秒`)
+        // 刷新页面以获取新的视频
+        window.location.reload()
+      }
+    } catch (error) {
+      console.error('重新提取切片失败:', error)
+      message.error('重新提取切片失败')
+    } finally {
+      setReExtracting(false)
+    }
+  }
+
+  const handleGenerateTitle = async () => {
+    setGeneratingTitle(true)
+    try {
+      const result = await projectApi.generateClipTitle(clip.id)
+      if (result.success && result.generated_title) {
+        message.success('标题生成成功')
+        onClipUpdate?.(clip.id, { title: result.generated_title, generated_title: result.generated_title })
+      }
+    } catch (error) {
+      console.error('生成标题失败:', error)
+      message.error('AI标题生成失败')
+    } finally {
+      setGeneratingTitle(false)
+    }
+  }
+
+  const moreMenuItems: MenuProps['items'] = [
+    {
+      key: 'reextract',
+      icon: <ReloadOutlined />,
+      label: '重新切片',
+      onClick: handleReExtract,
+      disabled: reExtracting,
+    },
+    {
+      key: 'generate-title',
+      icon: <RobotOutlined />,
+      label: 'AI生成标题',
+      onClick: handleGenerateTitle,
+      disabled: generatingTitle,
+    },
+    {
+      key: 'subtitle-edit',
+      icon: <EditOutlined />,
+      label: '字幕编辑',
+      onClick: handleOpenSubtitleEditor,
+    },
+    {
+      type: 'divider',
+    },
+    {
+      key: 'delete',
+      icon: <DeleteOutlined />,
+      label: '删除切片',
+      danger: true,
+      onClick: () => {
+        Modal.confirm({
+          title: '确认删除',
+          content: `确定要删除切片 "${clip.title || clip.generated_title || '未命名'}" 吗？此操作不可恢复。`,
+          okText: '删除',
+          okType: 'danger',
+          cancelText: '取消',
+          onOk: handleDeleteClip,
+        })
+      },
+    },
+  ]
 
 
   const formatDuration = (seconds: number) => {
@@ -434,23 +526,24 @@ const ClipCard: React.FC<ClipCardProps> = ({
               >
                 下载
               </Button>
-              <Button 
-                type="text" 
-                size="small"
-                icon={<UploadOutlined />}
-                onClick={() => message.info('开发中，敬请期待', 3)}
-                style={{
-                  color: '#ff7875',
-                  border: '1px solid rgba(255, 120, 117, 0.3)',
-                  borderRadius: '6px',
-                  fontSize: '12px',
-                  height: '28px',
-                  padding: '0 12px',
-                  background: 'rgba(255, 120, 117, 0.1)'
-                }}
-              >
-                投稿
-              </Button>
+              <Dropdown menu={{ items: moreMenuItems }} trigger={['click']}>
+                <Button 
+                  type="text" 
+                  size="small"
+                  icon={<MoreOutlined />}
+                  style={{
+                    color: '#b0b0b0',
+                    border: '1px solid rgba(176, 176, 176, 0.3)',
+                    borderRadius: '6px',
+                    fontSize: '12px',
+                    height: '28px',
+                    padding: '0 10px',
+                    background: 'rgba(176, 176, 176, 0.1)'
+                  }}
+                >
+                  更多
+                </Button>
+              </Dropdown>
             </div>
           </div>
         </Card>
@@ -464,19 +557,27 @@ const ClipCard: React.FC<ClipCardProps> = ({
             下载视频
           </Button>,
           <Button 
+            key="reextract" 
+            icon={<ReloadOutlined />} 
+            onClick={handleReExtract}
+            loading={reExtracting}
+          >
+            重新切片
+          </Button>,
+          <Button 
+            key="generate-title" 
+            icon={<RobotOutlined />} 
+            onClick={handleGenerateTitle}
+            loading={generatingTitle}
+          >
+            AI生成标题
+          </Button>,
+          <Button 
             key="subtitle" 
             icon={<EditOutlined />} 
             onClick={handleOpenSubtitleEditor}
           >
             字幕编辑
-          </Button>,
-          <Button 
-            key="upload" 
-            type="default" 
-            icon={<UploadOutlined />} 
-            onClick={() => message.info('开发中，敬请期待', 3)}
-          >
-            投稿到B站
           </Button>
         ]}
         width={800}

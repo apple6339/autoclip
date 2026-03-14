@@ -524,6 +524,16 @@ const ProjectDetailPage: React.FC = () => {
                         setCurrentProject(updatedProject)
                       }
                     }}
+                    onClipDelete={(clipId: string) => {
+                      // 从本地状态中移除切片
+                      if (currentProject) {
+                        const updatedProject = {
+                          ...currentProject,
+                          clips: currentProject.clips?.filter((c: Clip) => c.id !== clipId) || []
+                        }
+                        setCurrentProject(updatedProject)
+                      }
+                    }}
                   />
                 ))}
               </div>

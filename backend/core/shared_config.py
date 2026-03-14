@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Dict, Any, Optional
 from dataclasses import dataclass, field
-from pydantic import BaseModel, validator
+from pydantic import BaseModel, field_validator
 from enum import Enum
 
 # 视频分类枚举
@@ -154,13 +154,15 @@ class Settings(BaseModel):
     # bilibili_auto_generate_tags: bool = True
     # bilibili_tag_limit: int = 12
     
-    @validator('min_score_threshold')
+    @field_validator('min_score_threshold')
+    @classmethod
     def validate_score_threshold(cls, v):
         if not 0 <= v <= 1:
             raise ValueError('评分阈值必须在0-1之间')
         return v
     
-    @validator('chunk_size')
+    @field_validator('chunk_size')
+    @classmethod
     def validate_chunk_size(cls, v):
         if v <= 0:
             raise ValueError('分块大小必须大于0')
