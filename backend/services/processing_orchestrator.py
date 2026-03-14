@@ -658,7 +658,7 @@ class ProcessingOrchestrator:
     
     def _validate_step_dependencies(self, steps_to_execute: List[ProcessingStep]):
         """验证步骤依赖关系"""
-        # 对执行列表中的每个步骤都做依赖检查，避免中间步骤缺失时延迟失败
+        # 对执行列表中的每个步骤都做依赖检查，避免中间步骤缺失时延迟发现失败
         if steps_to_execute:
             missing_dependencies = {}
             
@@ -875,11 +875,23 @@ class ProcessingOrchestrator:
 
         if isinstance(payload, list):
             item_count = len(payload)
-            if payload and not all(isinstance(item, dict) for item in payload):
+            all_items_are_dict = True
+            missing_required_clip_fields = False
+
+            for item in payload:
+                if not isinstance(item, dict):
+                    all_items_are_dict = False
+                    break
+                if output_path.name == "clips_metadata.json":
+                    required_fields = {"video_path", "status", "duration_seconds"}
+                    if not required_fields.issubset(item.keys()):
+                        missing_required_clip_fields = True
+
+            if payload and not all_items_are_dict:
                 issues.append("non_object_items")
-            if output_path.name == "clips_metadata.json" and payload:
+            if output_path.name == "clips_metadata.json" and payload and all_items_are_dict:
                 required_fields = {"video_path", "status", "duration_seconds"}
-                required_fields_present = all(required_fields.issubset(item.keys()) for item in payload if isinstance(item, dict))
+                required_fields_present = not missing_required_clip_fields
                 if not required_fields_present:
                     issues.append("missing_required_clip_metadata_fields")
             elif payload:
@@ -899,9 +911,12 @@ class ProcessingOrchestrator:
         if item_count == 0:
             issues.append("empty_output")
 
+        empty_output_only = len(issues) == 1 and issues[0] == "empty_output"
+
         return {
-            "valid": len(issues) == 0 or issues == ["empty_output"],
-            "reason": "ok" if len(issues) == 0 else ("warning" if issues == ["empty_output"] else "invalid_content"),
+            "valid": len(issues) == 0 or empty_output_only,
+            "reason": "ok" if len(issues) == 0 else ("warning" if empty_output_only else "invalid_content"),
+            "has_warnings": empty_output_only,
             "issues": issues,
             "item_count": item_count,
             "required_fields_present": required_fields_present
@@ -922,7 +937,7 @@ class ProcessingOrchestrator:
             return f"complete_dependencies:{','.join(missing_dependencies)}"
         if status == "invalid_output":
             return "regenerate_output"
-        if output_validation.get("issues") == ["empty_output"]:
+        if len(output_validation.get("issues", [])) == 1 and output_validation["issues"][0] == "empty_output":
             return "review_empty_output"
         if status == "pending":
             return "ready_to_run"

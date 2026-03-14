@@ -41,15 +41,15 @@ class TestProcessingOrchestratorModuleChecks:
 
         orchestrator = ProcessingOrchestrator("project-1", "task-1", Mock())
         with patch("backend.services.processing_orchestrator.shared_config_manager.get_project_paths", return_value=project_paths):
-            summary = orchestrator.get_all_step_health_statuses()
+            step_health_summary = orchestrator.get_all_step_health_statuses()
 
-        step_status_map = {item["step"]: item for item in summary["steps"]}
+        step_status_map = {item["step"]: item for item in step_health_summary["steps"]}
         assert step_status_map["step1_outline"]["status"] == "completed"
         assert step_status_map["step2_timeline"]["status"] == "pending"
         assert step_status_map["step3_scoring"]["status"] == "blocked"
         assert "step2_timeline" in step_status_map["step3_scoring"]["missing_dependencies"]
         assert step_status_map["step2_timeline"]["can_execute"] is True
-        assert summary["ready_steps"] == ["step2_timeline"]
+        assert step_health_summary["ready_steps"] == ["step2_timeline"]
 
     def test_validate_all_step_outputs_reports_failed_and_blocked_steps(self, tmp_path):
         project_paths = {
