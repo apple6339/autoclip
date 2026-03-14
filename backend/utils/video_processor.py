@@ -125,8 +125,42 @@ class VideoProcessor:
             return 0.0
     
     @staticmethod
+    def normalize_time_value(time_value) -> tuple[str, float]:
+        """
+        统一时间值格式，兼容秒数、纯数字字符串、SRT/FFmpeg时间字符串。
+        
+        Args:
+            time_value: 时间值
+            
+        Returns:
+            (FFmpeg时间字符串, 秒数)
+        """
+        if isinstance(time_value, (int, float)):
+            seconds = float(time_value)
+            return VideoProcessor.convert_seconds_to_ffmpeg_time(seconds), seconds
+        
+        if isinstance(time_value, str):
+            normalized = time_value.strip()
+            if not normalized:
+                raise ValueError("时间值不能为空")
+            
+            numeric_value = normalized.replace(',', '.')
+            if ':' not in normalized:
+                try:
+                    seconds = float(numeric_value)
+                    return VideoProcessor.convert_seconds_to_ffmpeg_time(seconds), seconds
+                except ValueError as e:
+                    raise ValueError(f"无效的秒数格式: {time_value}") from e
+            
+            ffmpeg_time = VideoProcessor.convert_srt_time_to_ffmpeg_time(normalized)
+            seconds = VideoProcessor.convert_ffmpeg_time_to_seconds(ffmpeg_time)
+            return ffmpeg_time, seconds
+        
+        raise ValueError(f"不支持的时间值类型: {type(time_value).__name__}")
+    
+    @staticmethod
     def extract_clip(input_video: Path, output_path: Path, 
-                    start_time: str, end_time: str) -> bool:
+                     start_time: str, end_time: str) -> bool:
         """
         从视频中提取指定时间段的片段
         
@@ -140,17 +174,21 @@ class VideoProcessor:
             是否成功
         """
         try:
+            if not input_video.exists():
+                logger.error(f"输入视频不存在: {input_video}")
+                return False
+            
             # 确保输出目录存在
             output_path.parent.mkdir(parents=True, exist_ok=True)
             
-            # 转换时间格式：从SRT格式转换为FFmpeg格式
-            ffmpeg_start_time = VideoProcessor.convert_srt_time_to_ffmpeg_time(start_time)
-            ffmpeg_end_time = VideoProcessor.convert_srt_time_to_ffmpeg_time(end_time)
-            
-            # 计算持续时间
-            start_seconds = VideoProcessor.convert_ffmpeg_time_to_seconds(ffmpeg_start_time)
-            end_seconds = VideoProcessor.convert_ffmpeg_time_to_seconds(ffmpeg_end_time)
+            # 转换时间格式并校验时间范围
+            ffmpeg_start_time, start_seconds = VideoProcessor.normalize_time_value(start_time)
+            ffmpeg_end_time, end_seconds = VideoProcessor.normalize_time_value(end_time)
             duration = end_seconds - start_seconds
+            
+            if duration <= 0:
+                logger.error(f"无效的切片时间范围: {start_time} -> {end_time}")
+                return False
             
             # 构建优化的FFmpeg命令
             # 使用 -ss 在输入前进行精确定位，使用 -t 指定持续时间
@@ -359,17 +397,26 @@ class VideoProcessor:
         """
         successful_clips = []
         
-        for clip_data in clips_data:
-            clip_id = clip_data['id']
+        for index, clip_data in enumerate(clips_data, start=1):
+            clip_id = clip_data.get('id', str(index))
             title = clip_data.get('title', f"片段_{clip_id}")
-            start_time = clip_data['start_time']
-            end_time = clip_data['end_time']
+            start_time = clip_data.get('start_time')
+            end_time = clip_data.get('end_time')
             
-            # 处理时间格式 - 如果是秒数，转换为SRT格式
-            if isinstance(start_time, (int, float)):
-                start_time = VideoProcessor.convert_seconds_to_ffmpeg_time(start_time)
-            if isinstance(end_time, (int, float)):
-                end_time = VideoProcessor.convert_seconds_to_ffmpeg_time(end_time)
+            if start_time is None or end_time is None:
+                logger.error(f"切片 {clip_id} 缺少开始或结束时间，已跳过")
+                continue
+            
+            try:
+                start_time, start_seconds = VideoProcessor.normalize_time_value(start_time)
+                end_time, end_seconds = VideoProcessor.normalize_time_value(end_time)
+            except ValueError as e:
+                logger.error(f"切片 {clip_id} 时间格式无效: {e}")
+                continue
+            
+            if end_seconds <= start_seconds:
+                logger.error(f"切片 {clip_id} 时间范围无效: {start_time} -> {end_time}")
+                continue
             
             # 使用标题作为文件名，并清理不合法的字符
             # 在文件名中包含clip_id，便于后续合集拼接时查找

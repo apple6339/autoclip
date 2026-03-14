@@ -9,6 +9,8 @@ from typing import Dict, Any, Optional
 from sqlalchemy.orm import Session
 
 from backend.models.task import Task, TaskStatus, TaskType
+from backend.core.shared_config import config_manager
+from backend.pipeline.step6_video import run_step6_video
 from backend.repositories.task_repository import TaskRepository
 from backend.services.config_manager import ProjectConfigManager, ProcessingStep
 # from backend.services.pipeline_adapter import PipelineAdapter  # 临时注释，文件不存在
@@ -338,6 +340,61 @@ class ProcessingService:
         return {
             "success": True,
             "message": "配置更新成功"
+        }
+
+    @handle_service_error
+    def extract_clips(self, project_id: str, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        执行切片提取（Step 6）。
+        
+        Args:
+            project_id: 项目ID
+            config: 预留配置参数
+            
+        Returns:
+            切片结果
+        """
+        logger.info(f"开始提取项目切片: {project_id}")
+        
+        project_paths = config_manager.get_project_paths(project_id)
+        metadata_dir = project_paths["metadata_dir"]
+        titles_path = metadata_dir / "step4_titles.json"
+        collections_path = metadata_dir / "step5_collections.json"
+        input_video_path = project_paths["input_dir"] / "input.mp4"
+        
+        if not titles_path.exists():
+            raise FileNotFoundError(f"步骤4结果文件不存在: {titles_path}")
+        if not collections_path.exists():
+            raise FileNotFoundError(f"步骤5结果文件不存在: {collections_path}")
+        if not input_video_path.exists():
+            raise FileNotFoundError(f"输入视频文件不存在: {input_video_path}")
+        
+        result = run_step6_video(
+            clips_with_titles_path=titles_path,
+            collections_path=collections_path,
+            input_video=input_video_path,
+            output_dir=project_paths["output_dir"],
+            clips_dir=str(project_paths["clips_dir"]),
+            collections_dir=str(project_paths["collections_dir"]),
+            metadata_dir=str(metadata_dir)
+        )
+        
+        try:
+            from ..services.data_sync_service import DataSyncService
+            
+            sync_service = DataSyncService(self.db)
+            sync_result = sync_service.sync_project_from_filesystem(project_id, project_paths["project_base"])
+            if sync_result.get("success"):
+                logger.info(f"项目 {project_id} 切片数据同步成功")
+            else:
+                logger.warning(f"项目 {project_id} 切片数据同步失败: {sync_result}")
+        except Exception as e:
+            logger.warning(f"切片数据同步失败: {e}")
+        
+        return {
+            "success": True,
+            "project_id": project_id,
+            "result": result
         }
     
     @handle_service_error

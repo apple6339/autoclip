@@ -133,6 +133,33 @@ class VideoGenerator:
         logger.info(f"合集元数据已保存到: {output_path}")
         return output_path
 
+    def get_clip_output_path(self, clip: Dict[str, Any]) -> Path:
+        """根据切片元数据构建输出路径。"""
+        title = clip.get('generated_title', clip.get('title', f"片段_{clip['id']}"))
+        safe_title = VideoProcessor.sanitize_filename(title)
+        return self.clips_dir / f"{clip['id']}_{safe_title}.mp4"
+
+    def enrich_clip_metadata(self, clips_with_titles: List[Dict]) -> List[Dict]:
+        """补充切片输出文件路径和执行状态。"""
+        enriched_clips = []
+        
+        for clip in clips_with_titles:
+            clip_record = dict(clip)
+            output_path = self.get_clip_output_path(clip_record)
+            clip_record["video_path"] = str(output_path)
+            clip_record["status"] = "completed" if output_path.exists() else "failed"
+            
+            try:
+                _, start_seconds = VideoProcessor.normalize_time_value(clip_record.get("start_time", 0))
+                _, end_seconds = VideoProcessor.normalize_time_value(clip_record.get("end_time", 0))
+                clip_record["duration_seconds"] = max(end_seconds - start_seconds, 0)
+            except ValueError:
+                clip_record["duration_seconds"] = 0
+            
+            enriched_clips.append(clip_record)
+        
+        return enriched_clips
+
 def run_step6_video(clips_with_titles_path: Path, collections_path: Path, 
                    input_video: Path, output_dir: Optional[Path] = None, 
                    clips_dir: Optional[str] = None, collections_dir: Optional[str] = None, 
@@ -165,21 +192,25 @@ def run_step6_video(clips_with_titles_path: Path, collections_path: Path,
     # 生成合集视频
     successful_collections = generator.generate_collections(collections_data)
     
+    enriched_clips = generator.enrich_clip_metadata(clips_with_titles)
+    
     # 保存元数据到项目目录
     # 注意：clips_metadata.json在这里保存，包含最终的切片元数据（包含视频路径等信息）
     # 这与step4的step4_titles.json不同，step4只保存带标题的片段数据
     if metadata_dir:
         project_metadata_dir = Path(metadata_dir)
-        generator.save_clip_metadata(clips_with_titles, project_metadata_dir / "clips_metadata.json")
+        generator.save_clip_metadata(enriched_clips, project_metadata_dir / "clips_metadata.json")
         generator.save_collection_metadata(collections_data, project_metadata_dir / "collections_metadata.json")
     else:
-        generator.save_clip_metadata(clips_with_titles)
+        generator.save_clip_metadata(enriched_clips)
         generator.save_collection_metadata(collections_data)
     
     # 返回结果信息
     result = {
         'clips_generated': len(successful_clips),
+        'clips_count': len(successful_clips),
         'collections_generated': len(successful_collections),
+        'collections_count': len(successful_collections),
         'clip_paths': [str(path) for path in successful_clips],
         'collection_paths': [str(path) for path in successful_collections]
     }
