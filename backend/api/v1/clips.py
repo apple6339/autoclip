@@ -2,19 +2,29 @@
 切片API路由
 """
 
+from pathlib import Path
 from typing import List, Optional
+from pydantic import BaseModel, Field
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from ...core.database import get_db
+from ...core.config import get_data_directory
 from ...services.clip_service import ClipService
 from ...schemas.clip import ClipCreate, ClipUpdate, ClipResponse, ClipListResponse, ClipStatus, ClipFilter
 from ...schemas.base import PaginationParams
 from ...models.clip import Clip
+from ...models.project import Project
 import logging
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+class ReExtractRequest(BaseModel):
+    """重新提取切片的请求体"""
+    start_time: Optional[float] = Field(default=None, ge=0, description="新的开始时间（秒）")
+    end_time: Optional[float] = Field(default=None, ge=0, description="新的结束时间（秒）")
 
 
 def get_clip_service(db: Session = Depends(get_db)) -> ClipService:
@@ -131,6 +141,129 @@ async def generate_clip_title(
         raise HTTPException(status_code=500, detail=f"生成切片标题失败: {str(e)}")
 
 
+@router.post("/{clip_id}/re-extract")
+async def re_extract_clip(
+    clip_id: str,
+    request: Optional[ReExtractRequest] = None,
+    db: Session = Depends(get_db)
+):
+    """
+    重新提取单个切片视频
+    
+    支持使用原始时间范围或自定义时间范围重新切片。
+    """
+    try:
+        from ...utils.video_processor import VideoProcessor
+        
+        # 获取切片信息
+        clip = db.query(Clip).filter(Clip.id == clip_id).first()
+        if not clip:
+            raise HTTPException(status_code=404, detail="切片不存在")
+        
+        project_id = str(clip.project_id)
+        
+        # 获取项目信息
+        project = db.query(Project).filter(Project.id == project_id).first()
+        if not project:
+            raise HTTPException(status_code=404, detail="项目不存在")
+        
+        # 确定项目目录和源视频
+        data_dir = get_data_directory()
+        project_dir = data_dir / "projects" / project_id
+        raw_dir = project_dir / "raw"
+        clips_dir = project_dir / "clips"
+        clips_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 查找源视频文件
+        input_video = None
+        for ext in ['.mp4', '.mkv', '.avi', '.mov', '.webm', '.flv']:
+            candidate = raw_dir / f"input{ext}"
+            if candidate.exists():
+                input_video = candidate
+                break
+        
+        if not input_video:
+            # 尝试查找raw目录下任何视频文件
+            if raw_dir.exists():
+                for f in raw_dir.iterdir():
+                    if f.suffix.lower() in ['.mp4', '.mkv', '.avi', '.mov', '.webm', '.flv']:
+                        input_video = f
+                        break
+        
+        if not input_video:
+            raise HTTPException(status_code=404, detail="源视频文件不存在，无法重新切片")
+        
+        # 确定时间范围
+        start_time = clip.start_time
+        end_time = clip.end_time
+        
+        if request:
+            if request.start_time is not None:
+                start_time = request.start_time
+            if request.end_time is not None:
+                end_time = request.end_time
+        
+        if end_time <= start_time:
+            raise HTTPException(status_code=400, detail="结束时间必须大于开始时间")
+        
+        # 删除旧的切片文件
+        old_files = list(clips_dir.glob(f"{clip_id}_*.mp4"))
+        for old_file in old_files:
+            try:
+                old_file.unlink()
+                logger.info(f"删除旧切片文件: {old_file}")
+            except OSError as e:
+                logger.warning(f"删除旧切片文件失败: {e}")
+        
+        # 准备提取参数
+        title = clip.title or f"片段_{clip_id}"
+        safe_title = VideoProcessor.sanitize_filename(title)
+        output_path = clips_dir / f"{clip_id}_{safe_title}.mp4"
+        
+        # 转换时间为ffmpeg格式
+        start_time_str = VideoProcessor.convert_seconds_to_ffmpeg_time(float(start_time))
+        end_time_str = VideoProcessor.convert_seconds_to_ffmpeg_time(float(end_time))
+        
+        # 执行提取
+        success = VideoProcessor.extract_clip(
+            input_video=input_video,
+            output_path=output_path,
+            start_time=start_time_str,
+            end_time=end_time_str
+        )
+        
+        if not success:
+            raise HTTPException(status_code=500, detail="切片视频提取失败")
+        
+        # 更新数据库中的切片信息
+        clip.start_time = int(start_time)
+        clip.end_time = int(end_time)
+        clip.duration = int(end_time - start_time)
+        clip.video_path = str(output_path.relative_to(project_dir)) if output_path.exists() else None
+        clip.status = "completed"
+        db.commit()
+        
+        duration = int(end_time - start_time)
+        
+        return {
+            "success": True,
+            "clip_id": clip_id,
+            "project_id": project_id,
+            "start_time": int(start_time),
+            "end_time": int(end_time),
+            "duration": duration,
+            "video_path": str(output_path.name),
+            "message": f"切片重新提取成功，时长 {duration} 秒"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"重新提取切片失败: {e}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"重新提取切片失败: {str(e)}")
+
+
 @router.post("/", response_model=ClipResponse)
 async def create_clip(
     clip_data: ClipCreate,
@@ -226,14 +359,35 @@ async def update_clip(
 @router.delete("/{clip_id}")
 async def delete_clip(
     clip_id: str,
+    db: Session = Depends(get_db),
     clip_service: ClipService = Depends(get_clip_service)
 ):
-    """Delete a clip."""
+    """Delete a clip and its associated video file."""
     try:
+        # 先获取切片信息用于文件清理
+        clip = db.query(Clip).filter(Clip.id == clip_id).first()
+        if not clip:
+            raise HTTPException(status_code=404, detail="Clip not found")
+        
+        project_id = str(clip.project_id)
+        
+        # 删除切片视频文件
+        data_dir = get_data_directory()
+        clips_dir = data_dir / "projects" / project_id / "clips"
+        if clips_dir.exists():
+            clip_files = list(clips_dir.glob(f"{clip_id}_*.mp4"))
+            for clip_file in clip_files:
+                try:
+                    clip_file.unlink()
+                    logger.info(f"已删除切片文件: {clip_file}")
+                except OSError as e:
+                    logger.warning(f"删除切片文件失败: {e}")
+        
+        # 从数据库删除
         success = clip_service.delete(clip_id)
         if not success:
             raise HTTPException(status_code=404, detail="Clip not found")
-        return {"message": "Clip deleted successfully"}
+        return {"message": "切片删除成功", "clip_id": clip_id}
     except HTTPException:
         raise
     except Exception as e:
@@ -247,10 +401,7 @@ async def cleanup_duplicate_clips(
 ):
     """清理项目中的重复切片数据"""
     try:
-        from ...models.project import Project
         import json
-        from pathlib import Path
-        from ...core.config import get_data_directory
         
         # 获取项目
         project = db.query(Project).filter(Project.id == project_id).first()
@@ -322,10 +473,7 @@ async def resync_project_clips(
 ):
     """重新同步项目的切片数据"""
     try:
-        from ...models.project import Project
         from ...services.data_sync_service import DataSyncService
-        from pathlib import Path
-        from ...core.config import get_data_directory
         
         # 获取项目
         project = db.query(Project).filter(Project.id == project_id).first()
