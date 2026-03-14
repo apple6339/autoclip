@@ -60,6 +60,11 @@ data/uploads/
 data/temp/
 data/output/
 data/backups/
+backend/data/projects/
+backend/data/uploads/
+backend/data/temp/
+backend/data/output/
+backend/data/backups/
 
 # 系统文件
 .DS_Store
