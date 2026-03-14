@@ -338,7 +338,7 @@ class PipelineAdapter:
         """执行步骤1：大纲提取"""
         try:
             input_srt_path = self.project_paths["input_dir"] / "input.srt"
-            output_path = self.project_paths["metadata_dir"] / "step1_outline.json"
+            output_path = self.get_step_output_path("step1_outline")
             
             prompt_files = self._get_prompt_files()
             
@@ -358,7 +358,7 @@ class PipelineAdapter:
     async def _execute_step2(self) -> Dict[str, Any]:
         """执行步骤2：时间线提取"""
         try:
-            outline_path = self.project_paths["metadata_dir"] / "step1_outline.json"
+            outline_path = self.get_step_output_path("step1_outline")
             output_path = self.project_paths["metadata_dir"] / "step2_timeline.json"
             
             if not outline_path.exists():
