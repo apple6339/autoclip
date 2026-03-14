@@ -45,8 +45,150 @@ class PipelineAdapter:
         
         # 步骤执行结果
         self.step_results = {}
+
+    def prepare_step_environment(self, step_name: str):
+        """准备步骤执行环境"""
+        config_manager.ensure_project_directories(self.project_id)
+        output_path = self.get_step_output_path(step_name)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def adapt_step(self, step_name: str, **kwargs) -> Dict[str, Any]:
+        """按步骤名称构造执行参数"""
+        adapter_map = {
+            "step1_outline": lambda: self.adapt_step1_outline(kwargs.get("srt_path")),
+            "step2_timeline": self.adapt_step2_timeline,
+            "step3_scoring": self.adapt_step3_scoring,
+            "step4_title": self.adapt_step4_title,
+            "step5_clustering": self.adapt_step5_clustering,
+            "step6_video": self.adapt_step6_video,
+        }
+
+        if step_name not in adapter_map:
+            raise ValueError(f"无效的步骤名称: {step_name}")
+
+        return adapter_map[step_name]()
+
+    def adapt_step1_outline(self, srt_path: Optional[Path]) -> Dict[str, Any]:
+        """构造 Step1 执行参数"""
+        if not srt_path:
+            raise ValueError("Step1需要提供SRT文件路径")
+
+        srt_path = Path(srt_path)
+        if not srt_path.exists():
+            raise FileNotFoundError(f"SRT文件不存在: {srt_path}")
+
+        return {
+            "srt_path": srt_path,
+            "metadata_dir": self.project_paths["metadata_dir"],
+            "output_path": self.get_step_output_path("step1_outline"),
+            "prompt_files": self._get_prompt_files(),
+        }
+
+    def adapt_step2_timeline(self) -> Dict[str, Any]:
+        """构造 Step2 执行参数"""
+        return {
+            "outline_path": self._require_step_output("step1_outline", "步骤1结果文件不存在"),
+            "metadata_dir": self.project_paths["metadata_dir"],
+            "output_path": self.get_step_output_path("step2_timeline"),
+            "prompt_files": self._get_prompt_files(),
+        }
+
+    def adapt_step3_scoring(self) -> Dict[str, Any]:
+        """构造 Step3 执行参数"""
+        return {
+            "timeline_path": self._require_step_output("step2_timeline", "步骤2结果文件不存在"),
+            "metadata_dir": self.project_paths["metadata_dir"],
+            "output_path": self.get_step_output_path("step3_scoring"),
+            "prompt_files": self._get_prompt_files(),
+        }
+
+    def adapt_step4_title(self) -> Dict[str, Any]:
+        """构造 Step4 执行参数"""
+        return {
+            "high_score_clips_path": self._require_step_output("step3_scoring", "步骤3结果文件不存在"),
+            "metadata_dir": self.project_paths["metadata_dir"],
+            "output_path": self.get_step_output_path("step4_title"),
+            "prompt_files": self._get_prompt_files(),
+        }
+
+    def adapt_step5_clustering(self) -> Dict[str, Any]:
+        """构造 Step5 执行参数"""
+        return {
+            "clips_with_titles_path": self._require_step_output("step4_title", "步骤4结果文件不存在"),
+            "metadata_dir": self.project_paths["metadata_dir"],
+            "output_path": self.get_step_output_path("step5_clustering"),
+            "prompt_files": self._get_prompt_files(),
+        }
+
+    def adapt_step6_video(self) -> Dict[str, Any]:
+        """构造 Step6 执行参数"""
+        input_video_path = self.project_paths["input_dir"] / "input.mp4"
+        if not input_video_path.exists():
+            raise FileNotFoundError(f"输入视频文件不存在: {input_video_path}")
+
+        return {
+            "clips_with_titles_path": self._require_step_output("step4_title", "步骤4结果文件不存在"),
+            "collections_path": self._require_step_output("step5_clustering", "步骤5结果文件不存在"),
+            "input_video": input_video_path,
+            "output_dir": self.project_paths["output_dir"],
+            "clips_dir": str(self.project_paths["clips_dir"]),
+            "collections_dir": str(self.project_paths["collections_dir"]),
+            "metadata_dir": str(self.project_paths["metadata_dir"]),
+        }
+
+    def get_step_output_path(self, step_name: str) -> Path:
+        """获取步骤输出文件路径"""
+        output_map = {
+            "step1_outline": self.project_paths["metadata_dir"] / "step1_outline.json",
+            "step2_timeline": self.project_paths["metadata_dir"] / "step2_timeline.json",
+            "step3_scoring": self.project_paths["metadata_dir"] / "step3_scoring.json",
+            "step4_title": self.project_paths["metadata_dir"] / "step4_titles.json",
+            "step5_clustering": self.project_paths["metadata_dir"] / "step5_collections.json",
+            "step6_video": self.project_paths["metadata_dir"] / "clips_metadata.json",
+        }
+        try:
+            return output_map[step_name]
+        except KeyError as exc:
+            raise ValueError(f"无效的步骤名称: {step_name}") from exc
+
+    def cleanup_intermediate_files(self, step_name: str):
+        """清理步骤输出文件，供重试使用"""
+        step_output = self.get_step_output_path(step_name)
+        if step_output.exists():
+            step_output.unlink()
+
+        if step_name == "step6_video":
+            collections_output = self.project_paths["metadata_dir"] / "collections_metadata.json"
+            if collections_output.exists():
+                collections_output.unlink()
+
+    def get_step_result(self, step_name: str) -> Any:
+        """获取步骤结果"""
+        if step_name in self.step_results:
+            return self.step_results[step_name]
+
+        output_path = self.get_step_output_path(step_name)
+        if output_path.exists():
+            with open(output_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        return None
+
+    def _require_step_output(self, step_name: str, error_message: str) -> Path:
+        """确保步骤输出存在"""
+        output_path = self.get_step_output_path(step_name)
+        if not output_path.exists():
+            raise FileNotFoundError(error_message)
+        return output_path
+
+    def _get_prompt_files(self) -> Dict[str, Path]:
+        """根据项目分类获取提示词文件"""
+        project = self.db.query(Project).filter(Project.id == self.project_id).first()
+        video_category = "default"
+        if project and project.project_metadata:
+            video_category = project.project_metadata.get("video_category", "default")
+        return get_prompt_files(video_category)
         
-    def validate_pipeline_prerequisites(self) -> List[str]:
+    def validate_pipeline_prerequisites(self, srt_path: Optional[Path] = None) -> List[str]:
         """
         验证流水线前置条件
         
@@ -66,7 +208,7 @@ class PipelineAdapter:
         
         # 检查输入文件
         input_video = self.project_paths["input_dir"] / "input.mp4"
-        input_srt = self.project_paths["input_dir"] / "input.srt"
+        input_srt = Path(srt_path) if srt_path else self.project_paths["input_dir"] / "input.srt"
         
         if not input_video.exists():
             errors.append(f"视频文件不存在: {input_video}")
@@ -196,16 +338,9 @@ class PipelineAdapter:
         """执行步骤1：大纲提取"""
         try:
             input_srt_path = self.project_paths["input_dir"] / "input.srt"
-            output_path = self.project_paths["metadata_dir"] / "step1_outlines.json"
+            output_path = self.project_paths["metadata_dir"] / "step1_outline.json"
             
-            # 获取项目信息以确定视频分类
-            project = self.db.query(Project).filter(Project.id == self.project_id).first()
-            video_category = "default"
-            if project and project.project_metadata:
-                video_category = project.project_metadata.get("video_category", "default")
-            
-            # 获取对应的提示词文件
-            prompt_files = get_prompt_files(video_category)
+            prompt_files = self._get_prompt_files()
             
             result = run_step1_outline(
                 srt_path=input_srt_path,
@@ -223,20 +358,13 @@ class PipelineAdapter:
     async def _execute_step2(self) -> Dict[str, Any]:
         """执行步骤2：时间线提取"""
         try:
-            outline_path = self.project_paths["metadata_dir"] / "step1_outlines.json"
+            outline_path = self.project_paths["metadata_dir"] / "step1_outline.json"
             output_path = self.project_paths["metadata_dir"] / "step2_timeline.json"
             
             if not outline_path.exists():
                 return {"status": "failed", "message": "步骤1结果文件不存在"}
             
-            # 获取项目信息以确定视频分类
-            project = self.db.query(Project).filter(Project.id == self.project_id).first()
-            video_category = "default"
-            if project and project.project_metadata:
-                video_category = project.project_metadata.get("video_category", "default")
-            
-            # 获取对应的提示词文件
-            prompt_files = get_prompt_files(video_category)
+            prompt_files = self._get_prompt_files()
             
             result = run_step2_timeline(
                 outline_path=outline_path,
@@ -260,14 +388,7 @@ class PipelineAdapter:
             if not timeline_path.exists():
                 return {"status": "failed", "message": "步骤2结果文件不存在"}
             
-            # 获取项目信息以确定视频分类
-            project = self.db.query(Project).filter(Project.id == self.project_id).first()
-            video_category = "default"
-            if project and project.project_metadata:
-                video_category = project.project_metadata.get("video_category", "default")
-            
-            # 获取对应的提示词文件
-            prompt_files = get_prompt_files(video_category)
+            prompt_files = self._get_prompt_files()
             
             result = run_step3_scoring(
                 timeline_path=timeline_path,
@@ -291,14 +412,7 @@ class PipelineAdapter:
             if not scoring_path.exists():
                 return {"status": "failed", "message": "步骤3结果文件不存在"}
             
-            # 获取项目信息以确定视频分类
-            project = self.db.query(Project).filter(Project.id == self.project_id).first()
-            video_category = "default"
-            if project and project.project_metadata:
-                video_category = project.project_metadata.get("video_category", "default")
-            
-            # 获取对应的提示词文件
-            prompt_files = get_prompt_files(video_category)
+            prompt_files = self._get_prompt_files()
             
             result = run_step4_title(
                 high_score_clips_path=scoring_path,
@@ -322,14 +436,7 @@ class PipelineAdapter:
             if not titles_path.exists():
                 return {"status": "failed", "message": "步骤4结果文件不存在"}
             
-            # 获取项目信息以确定视频分类
-            project = self.db.query(Project).filter(Project.id == self.project_id).first()
-            video_category = "default"
-            if project and project.project_metadata:
-                video_category = project.project_metadata.get("video_category", "default")
-            
-            # 获取对应的提示词文件
-            prompt_files = get_prompt_files(video_category)
+            prompt_files = self._get_prompt_files()
             
             result = run_step5_clustering(
                 clips_with_titles_path=titles_path,

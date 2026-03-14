@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from backend.models.task import Task, TaskStatus, TaskType
 from backend.repositories.task_repository import TaskRepository
 from backend.services.config_manager import ProjectConfigManager, ProcessingStep
-# from backend.services.pipeline_adapter import PipelineAdapter  # 临时注释，文件不存在
+from backend.services.pipeline_adapter import PipelineAdapter
 from backend.core.config import get_project_root
 
 logger = logging.getLogger(__name__)
@@ -182,7 +182,7 @@ class ProcessingOrchestrator:
         
         # 初始化组件
         self.config_manager = ProjectConfigManager(project_id)
-        # self.adapter = PipelineAdapter(db, task_id, project_id)  # 临时注释，文件不存在
+        self.adapter = PipelineAdapter(project_id, task_id, db)
         self.task_repo = TaskRepository(db)
         
         # 步骤映射
@@ -195,14 +195,14 @@ class ProcessingOrchestrator:
             ProcessingStep.STEP6_VIDEO: run_step6_video
         }
         
-        # 步骤适配器映射 - 暂时禁用
+        # 步骤适配器映射
         self.step_adapters = {
-            # ProcessingStep.STEP1_OUTLINE: self.adapter.adapt_step1_outline,
-            # ProcessingStep.STEP2_TIMELINE: self.adapter.adapt_step2_timeline,
-            # ProcessingStep.STEP3_SCORING: self.adapter.adapt_step3_scoring,
-            # ProcessingStep.STEP4_TITLE: self.adapter.adapt_step4_title,
-            # ProcessingStep.STEP5_CLUSTERING: self.adapter.adapt_step5_clustering,
-            # ProcessingStep.STEP6_VIDEO: self.adapter.adapt_step6_video
+            ProcessingStep.STEP1_OUTLINE: self.adapter.adapt_step1_outline,
+            ProcessingStep.STEP2_TIMELINE: self.adapter.adapt_step2_timeline,
+            ProcessingStep.STEP3_SCORING: self.adapter.adapt_step3_scoring,
+            ProcessingStep.STEP4_TITLE: self.adapter.adapt_step4_title,
+            ProcessingStep.STEP5_CLUSTERING: self.adapter.adapt_step5_clustering,
+            ProcessingStep.STEP6_VIDEO: self.adapter.adapt_step6_video
         }
         
         # 步骤状态管理
@@ -320,7 +320,7 @@ class ProcessingOrchestrator:
             logger.info(f"开始执行项目 {self.project_id} 的子集流水线: {[step.value for step in steps_to_execute]}")
         
         # 验证前置条件
-        errors = self.adapter.validate_pipeline_prerequisites()
+        errors = self.adapter.validate_pipeline_prerequisites(srt_path=srt_path)
         if errors:
             error_msg = "; ".join(errors)
             self._update_task_status(TaskStatus.FAILED, error_message=error_msg)
@@ -608,7 +608,7 @@ class ProcessingOrchestrator:
             logger.info(f"开始保存项目 {self.project_id} 流水线结果到数据库")
             
             # 获取项目目录
-            project_dir = self.adapter.data_dir / "projects" / self.project_id
+            project_dir = self.adapter.project_paths["project_base"]
             
             # 使用DataSyncService同步数据到数据库
             from ..services.data_sync_service import DataSyncService
