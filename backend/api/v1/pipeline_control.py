@@ -11,6 +11,7 @@ from ...models.project import Project, ProjectStatus
 from ...models.task import Task, TaskStatus
 from ...services.auto_pipeline_service import auto_pipeline_service
 from ...services.progress_update_service import progress_update_service
+from ...services.processing_orchestrator import ProcessingOrchestrator
 import asyncio
 from datetime import datetime
 import logging
@@ -18,6 +19,13 @@ import logging
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _create_project_orchestrator(project_id: str, db: Session) -> ProcessingOrchestrator:
+    """为项目创建编排器实例，用于检查各步骤/模块状态。"""
+    latest_task = db.query(Task).filter(Task.project_id == project_id).order_by(Task.created_at.desc()).first()
+    task_id = str(latest_task.id) if latest_task else f"module_check_{project_id}"
+    return ProcessingOrchestrator(project_id, task_id, db)
 
 @router.post("/start/{project_id}")
 async def start_pipeline(
@@ -158,6 +166,8 @@ async def get_pipeline_status(project_id: str, db: Session = Depends(get_db)):
         
         # 获取项目任务
         tasks = db.query(Task).filter(Task.project_id == project_id).all()
+        orchestrator = _create_project_orchestrator(project_id, db)
+        module_summary = orchestrator.get_all_step_health_statuses()
         
         # 获取实时进度信息
         task_statuses = []
@@ -188,6 +198,7 @@ async def get_pipeline_status(project_id: str, db: Session = Depends(get_db)):
         return {
             'project_id': project_id,
             'project_status': project.status,
+            'module_summary': module_summary,
             'tasks': task_statuses,
             'total_tasks': len(tasks),
             'running_tasks': len([t for t in tasks if t.status in [TaskStatus.PENDING, TaskStatus.RUNNING]]),
@@ -199,6 +210,38 @@ async def get_pipeline_status(project_id: str, db: Session = Depends(get_db)):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取流水线状态失败: {str(e)}")
+
+
+@router.get("/modules/{project_id}")
+async def get_pipeline_modules_status(project_id: str, db: Session = Depends(get_db)):
+    """获取项目每个模块/步骤的检查结果。"""
+    try:
+        project = db.query(Project).filter(Project.id == project_id).first()
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        orchestrator = _create_project_orchestrator(project_id, db)
+        return orchestrator.get_all_step_health_statuses()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取模块状态失败: {str(e)}")
+
+
+@router.get("/modules/{project_id}/validate")
+async def validate_pipeline_modules(project_id: str, db: Session = Depends(get_db)):
+    """校验项目所有模块的依赖和输出。"""
+    try:
+        project = db.query(Project).filter(Project.id == project_id).first()
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        orchestrator = _create_project_orchestrator(project_id, db)
+        return orchestrator.validate_all_step_outputs()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"校验模块失败: {str(e)}")
 
 @router.get("/overview")
 async def get_pipeline_overview(db: Session = Depends(get_db)):

@@ -15,8 +15,26 @@ from backend.repositories.task_repository import TaskRepository
 from backend.services.config_manager import ProjectConfigManager, ProcessingStep
 # from backend.services.pipeline_adapter import PipelineAdapter  # 临时注释，文件不存在
 from backend.core.config import get_project_root
+from backend.core.shared_config import config_manager as shared_config_manager
 
 logger = logging.getLogger(__name__)
+
+STEP_DEPENDENCIES = {
+    ProcessingStep.STEP2_TIMELINE: [ProcessingStep.STEP1_OUTLINE],
+    ProcessingStep.STEP3_SCORING: [ProcessingStep.STEP2_TIMELINE],
+    ProcessingStep.STEP4_TITLE: [ProcessingStep.STEP3_SCORING],
+    ProcessingStep.STEP5_CLUSTERING: [ProcessingStep.STEP4_TITLE],
+    ProcessingStep.STEP6_VIDEO: [ProcessingStep.STEP5_CLUSTERING]
+}
+
+STEP_OUTPUT_CANDIDATES = {
+    ProcessingStep.STEP1_OUTLINE: ["step1_outline.json", "step1_outlines.json"],
+    ProcessingStep.STEP2_TIMELINE: ["step2_timeline.json"],
+    ProcessingStep.STEP3_SCORING: ["step3_high_score_clips.json", "step3_scoring.json", "step3_all_scored.json"],
+    ProcessingStep.STEP4_TITLE: ["step4_titles.json"],
+    ProcessingStep.STEP5_CLUSTERING: ["step5_collections.json"],
+    ProcessingStep.STEP6_VIDEO: ["clips_metadata.json", "step6_video_output.json"]
+}
 
 # 导入流水线步骤
 
@@ -630,31 +648,18 @@ class ProcessingOrchestrator:
     
     def _validate_step_dependencies(self, steps_to_execute: List[ProcessingStep]):
         """验证步骤依赖关系"""
-        # 定义步骤依赖关系
-        step_dependencies = {
-            ProcessingStep.STEP2_TIMELINE: [ProcessingStep.STEP1_OUTLINE],
-            ProcessingStep.STEP3_SCORING: [ProcessingStep.STEP2_TIMELINE],
-            ProcessingStep.STEP4_TITLE: [ProcessingStep.STEP3_SCORING],
-            ProcessingStep.STEP5_CLUSTERING: [ProcessingStep.STEP4_TITLE],
-            ProcessingStep.STEP6_VIDEO: [ProcessingStep.STEP5_CLUSTERING]
-        }
-        
-        # 只检查第一个步骤的依赖，因为其他步骤会在执行过程中逐步检查
+        # 对执行列表中的每个步骤都做依赖检查，避免中间步骤缺失时延迟失败
         if steps_to_execute:
-            first_step = steps_to_execute[0]
-            if first_step in step_dependencies:
-                required_steps = step_dependencies[first_step]
-                missing_steps = []
-                
-                for req_step in required_steps:
-                    # 检查依赖步骤是否已经完成（通过检查输出文件）
-                    step_output = self.adapter.get_step_output_path(req_step.value)
-                    if not step_output.exists():
-                        missing_steps.append(req_step)
-                
+            missing_dependencies = {}
+            
+            for step in steps_to_execute:
+                required_steps = STEP_DEPENDENCIES.get(step, [])
+                missing_steps = [req_step.value for req_step in required_steps if not self._step_has_output(req_step)]
                 if missing_steps:
-                    missing_step_names = [step.value for step in missing_steps]
-                    raise ValueError(f"步骤 {first_step.value} 缺少依赖步骤: {missing_step_names}")
+                    missing_dependencies[step.value] = missing_steps
+            
+            if missing_dependencies:
+                raise ValueError(f"步骤依赖检查失败: {missing_dependencies}")
     
     def get_pipeline_status(self) -> Dict[str, Any]:
         """获取流水线状态"""
@@ -778,3 +783,101 @@ class ProcessingOrchestrator:
             "completion_rate": len(completed_steps) / len(self.step_status) * 100 if self.step_status else 0,
             "step_details": self.step_status
         }
+
+    def _get_project_paths(self) -> Dict[str, Path]:
+        """获取项目相关路径。"""
+        return shared_config_manager.get_project_paths(self.project_id)
+
+    def _get_step_candidate_outputs(self, step: ProcessingStep) -> List[Path]:
+        """获取步骤可能产生的输出文件路径。"""
+        project_paths = self._get_project_paths()
+        search_dirs = [
+            project_paths["metadata_dir"],
+            project_paths["output_dir"]
+        ]
+        candidates = []
+        
+        for filename in STEP_OUTPUT_CANDIDATES.get(step, []):
+            for directory in search_dirs:
+                candidates.append(directory / filename)
+        
+        return candidates
+
+    def _get_existing_step_output(self, step: ProcessingStep) -> Optional[Path]:
+        """获取步骤实际存在的输出文件。"""
+        for candidate in self._get_step_candidate_outputs(step):
+            if candidate.exists():
+                return candidate
+        return None
+
+    def _step_has_output(self, step: ProcessingStep) -> bool:
+        """检查步骤是否已有可用输出。"""
+        return self._get_existing_step_output(step) is not None
+
+    def get_step_health_status(self, step: ProcessingStep) -> Dict[str, Any]:
+        """获取单个步骤/模块的健康状态。"""
+        existing_output = self._get_existing_step_output(step)
+        required_steps = STEP_DEPENDENCIES.get(step, [])
+        missing_dependencies = [req_step.value for req_step in required_steps if not self._step_has_output(req_step)]
+        runtime_status = self.step_status.get(step.value, {}).get("status")
+        
+        if runtime_status == "failed":
+            status = "failed"
+        elif runtime_status == "running":
+            status = "running"
+        elif existing_output and not missing_dependencies:
+            status = "completed"
+        elif missing_dependencies:
+            status = "blocked"
+        else:
+            status = "pending"
+        
+        return {
+            "step": step.value,
+            "display_name": step.value.replace("_", " "),
+            "status": status,
+            "has_output": existing_output is not None,
+            "output_path": str(existing_output) if existing_output else None,
+            "missing_dependencies": missing_dependencies,
+            "runtime_details": self.step_status.get(step.value, {})
+        }
+
+    def get_all_step_health_statuses(self) -> Dict[str, Any]:
+        """获取所有步骤/模块的健康状态。"""
+        steps = [
+            ProcessingStep.STEP1_OUTLINE,
+            ProcessingStep.STEP2_TIMELINE,
+            ProcessingStep.STEP3_SCORING,
+            ProcessingStep.STEP4_TITLE,
+            ProcessingStep.STEP5_CLUSTERING,
+            ProcessingStep.STEP6_VIDEO
+        ]
+        step_checks = [self.get_step_health_status(step) for step in steps]
+        
+        return {
+            "project_id": self.project_id,
+            "total_steps": len(step_checks),
+            "completed_steps": len([item for item in step_checks if item["status"] == "completed"]),
+            "blocked_steps": len([item for item in step_checks if item["status"] == "blocked"]),
+            "failed_steps": len([item for item in step_checks if item["status"] == "failed"]),
+            "running_steps": len([item for item in step_checks if item["status"] == "running"]),
+            "steps": step_checks
+        }
+
+    def validate_all_step_outputs(self) -> Dict[str, Any]:
+        """校验所有步骤模块的输出和依赖情况。"""
+        summary = self.get_all_step_health_statuses()
+        issues = []
+        
+        for step_status in summary["steps"]:
+            if step_status["status"] in {"blocked", "failed"}:
+                issues.append({
+                    "step": step_status["step"],
+                    "status": step_status["status"],
+                    "missing_dependencies": step_status["missing_dependencies"],
+                    "output_path": step_status["output_path"]
+                })
+        
+        summary["valid"] = len(issues) == 0
+        summary["issues"] = issues
+        return summary
