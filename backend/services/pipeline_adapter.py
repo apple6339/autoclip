@@ -557,7 +557,7 @@ class PipelineAdapter:
                 return hours * 3600 + minutes * 60 + seconds
             else:
                 return 0.0
-        except:
+        except (ValueError, IndexError, TypeError):
             return 0.0
 
 def create_pipeline_adapter(db: Session, task_id: str, project_id: str, progress_callback: Optional[Callable] = None) -> PipelineAdapter:

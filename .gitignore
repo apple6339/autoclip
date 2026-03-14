@@ -73,6 +73,7 @@ Thumbs.db
 # IDE文件
 .vscode/
 .idea/
+.trae/
 *.swp
 *.swo
 *~
@@ -80,6 +81,7 @@ Thumbs.db
 # 环境变量文件
 .env
 .env.local
+.env.backup
 .env.development.local
 .env.test.local
 .env.production.local
@@ -93,3 +95,9 @@ dump.rdb
 # 临时文件
 *.tmp
 *.temp
+
+# 构建标记文件
+.venv_deps_installed
+
+# 备份目录
+cleanup_backup/

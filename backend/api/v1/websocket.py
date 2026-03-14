@@ -55,7 +55,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                         {"message": "请发送有效的JSON格式消息"}
                     )
                     await manager.send_personal_message(error_message, user_id)
-                except:
+                except Exception:
                     # 如果发送失败，说明连接已断开，直接退出
                     break
             except Exception as e:
@@ -67,7 +67,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                         {"error": str(e)}
                     )
                     await manager.send_personal_message(error_message, user_id)
-                except:
+                except Exception:
                     # 如果发送失败，说明连接已断开，直接退出
                     break
     

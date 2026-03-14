@@ -467,8 +467,8 @@ async def start_processing(
                 error=str(e),
                 step="initialization"
             )
-        except:
-            pass
+        except Exception as notify_err:
+            logger.debug(f"发送WebSocket错误通知失败: {notify_err}")
         raise HTTPException(status_code=400, detail=str(e))
 
 

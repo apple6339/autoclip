@@ -146,14 +146,14 @@ def process_import_task(self, project_id: str, video_path: str, srt_file_path: O
             db = next(get_db())
             project_service = ProjectService(db)
             project_service.update_project_status(project_id, "failed")
-        except:
-            pass
+        except Exception as status_err:
+            logger.warning(f"更新项目失败状态时出错: {status_err}")
         
         self.update_state(state='FAILURE', meta={'error': str(e)})
         raise
     finally:
         try:
             db.close()
-        except:
+        except Exception:
             pass
 
