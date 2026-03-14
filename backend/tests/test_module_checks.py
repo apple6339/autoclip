@@ -1,15 +1,14 @@
-"""
-模块检查相关测试
-"""
+"""Tests for pipeline module checks."""
 
 import asyncio
+import json
 import sys
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
 
-# 添加项目根目录到Python路径
+# Add the project root to the Python path.
 project_root = Path(__file__).parent.parent.parent
 sys.path.append(str(project_root))
 
@@ -20,6 +19,7 @@ from backend.api.v1.pipeline_control import (
     get_pipeline_status,
     validate_pipeline_modules,
 )
+from backend.services.config_manager import ProcessingStep
 from backend.services.processing_orchestrator import ProcessingOrchestrator
 
 
@@ -36,8 +36,8 @@ class TestProcessingOrchestratorModuleChecks:
         for path in project_paths.values():
             path.mkdir(parents=True, exist_ok=True)
 
-        # 仅创建第一步输出，验证后续模块检查状态
-        (project_paths["metadata_dir"] / "step1_outline.json").write_text("{}", encoding="utf-8")
+        # Only create the first-step output so downstream states can be inferred.
+        (project_paths["metadata_dir"] / "step1_outline.json").write_text("[]", encoding="utf-8")
 
         orchestrator = ProcessingOrchestrator("project-1", "task-1", Mock())
         with patch("backend.services.processing_orchestrator.shared_config_manager.get_project_paths", return_value=project_paths):
@@ -48,6 +48,8 @@ class TestProcessingOrchestratorModuleChecks:
         assert step_status_map["step2_timeline"]["status"] == "pending"
         assert step_status_map["step3_scoring"]["status"] == "blocked"
         assert "step2_timeline" in step_status_map["step3_scoring"]["missing_dependencies"]
+        assert step_status_map["step2_timeline"]["can_execute"] is True
+        assert summary["ready_steps"] == ["step2_timeline"]
 
     def test_validate_all_step_outputs_reports_failed_and_blocked_steps(self, tmp_path):
         project_paths = {
@@ -61,11 +63,11 @@ class TestProcessingOrchestratorModuleChecks:
         for path in project_paths.values():
             path.mkdir(parents=True, exist_ok=True)
 
-        (project_paths["metadata_dir"] / "step1_outline.json").write_text("{}", encoding="utf-8")
-        (project_paths["metadata_dir"] / "step2_timeline.json").write_text("{}", encoding="utf-8")
+        (project_paths["metadata_dir"] / "step1_outline.json").write_text("[]", encoding="utf-8")
+        (project_paths["metadata_dir"] / "step2_timeline.json").write_text("[]", encoding="utf-8")
 
         orchestrator = ProcessingOrchestrator("project-1", "task-1", Mock())
-        orchestrator.step_status["step4_title"] = {"status": "failed", "error": "标题模块失败"}
+        orchestrator.step_status["step4_title"] = {"status": "failed", "error": "title step failed"}
 
         with patch("backend.services.processing_orchestrator.shared_config_manager.get_project_paths", return_value=project_paths):
             validation = orchestrator.validate_all_step_outputs()
@@ -74,6 +76,60 @@ class TestProcessingOrchestratorModuleChecks:
         issue_map = {item["step"]: item for item in validation["issues"]}
         assert issue_map["step4_title"]["status"] == "failed"
         assert issue_map["step5_clustering"]["status"] == "blocked"
+        assert issue_map["step5_clustering"]["recommendation"] == "complete_dependencies:step4_title"
+
+    def test_get_step_health_status_marks_invalid_json_output(self, tmp_path):
+        project_paths = {
+            "project_base": tmp_path / "project",
+            "input_dir": tmp_path / "project" / "raw",
+            "output_dir": tmp_path / "project" / "output",
+            "clips_dir": tmp_path / "project" / "output" / "clips",
+            "collections_dir": tmp_path / "project" / "output" / "collections",
+            "metadata_dir": tmp_path / "project" / "output" / "metadata",
+        }
+        for path in project_paths.values():
+            path.mkdir(parents=True, exist_ok=True)
+
+        invalid_output = project_paths["metadata_dir"] / "step2_timeline.json"
+        invalid_output.write_text("{invalid json", encoding="utf-8")
+
+        orchestrator = ProcessingOrchestrator("project-1", "task-1", Mock())
+        with patch("backend.services.processing_orchestrator.shared_config_manager.get_project_paths", return_value=project_paths):
+            step_health = orchestrator.get_step_health_status(step=ProcessingStep.STEP2_TIMELINE)
+
+        assert step_health["status"] == "invalid_output"
+        assert step_health["can_retry"] is True
+        assert step_health["recommendation"] == "regenerate_output"
+        assert step_health["output_validation"]["reason"] == "invalid_json"
+
+    def test_validate_all_step_outputs_reports_invalid_output_issue_details(self, tmp_path):
+        project_paths = {
+            "project_base": tmp_path / "project",
+            "input_dir": tmp_path / "project" / "raw",
+            "output_dir": tmp_path / "project" / "output",
+            "clips_dir": tmp_path / "project" / "output" / "clips",
+            "collections_dir": tmp_path / "project" / "output" / "collections",
+            "metadata_dir": tmp_path / "project" / "output" / "metadata",
+        }
+        for path in project_paths.values():
+            path.mkdir(parents=True, exist_ok=True)
+
+        metadata = [
+            {"id": "clip-1", "status": "completed", "duration_seconds": 3.0}
+        ]
+        (project_paths["metadata_dir"] / "clips_metadata.json").write_text(
+            json.dumps(metadata, ensure_ascii=False),
+            encoding="utf-8"
+        )
+
+        orchestrator = ProcessingOrchestrator("project-1", "task-1", Mock())
+        with patch("backend.services.processing_orchestrator.shared_config_manager.get_project_paths", return_value=project_paths):
+            validation = orchestrator.validate_all_step_outputs()
+
+        issue_map = {item["step"]: item for item in validation["issues"]}
+        assert issue_map["step6_video"]["status"] == "invalid_output"
+        assert "missing_required_clip_metadata_fields" in issue_map["step6_video"]["output_issues"]
+        assert issue_map["step6_video"]["recommendation"] == "regenerate_output"
 
 
 class TestPipelineControlModuleApis:
@@ -119,7 +175,7 @@ class TestPipelineControlModuleApis:
 
         task = Mock()
         task.id = "task-1"
-        task.name = "处理任务"
+        task.name = "processing task"
         task.status = "running"
         task.progress = 50
         task.current_step = "step2_timeline"

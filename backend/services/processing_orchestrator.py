@@ -6,6 +6,7 @@
 import logging
 import time
 import sys
+import json
 from typing import Dict, Any, List, Optional, Callable
 from pathlib import Path
 from sqlalchemy.orm import Session
@@ -34,6 +35,15 @@ STEP_OUTPUT_CANDIDATES = {
     ProcessingStep.STEP4_TITLE: ["step4_titles.json"],
     ProcessingStep.STEP5_CLUSTERING: ["step5_collections.json"],
     ProcessingStep.STEP6_VIDEO: ["clips_metadata.json", "step6_video_output.json"]
+}
+
+STEP_OUTPUT_REQUIREMENTS = {
+    ProcessingStep.STEP1_OUTLINE: {"container_type": list},
+    ProcessingStep.STEP2_TIMELINE: {"container_type": list},
+    ProcessingStep.STEP3_SCORING: {"container_type": list},
+    ProcessingStep.STEP4_TITLE: {"container_type": list},
+    ProcessingStep.STEP5_CLUSTERING: {"container_type": list},
+    ProcessingStep.STEP6_VIDEO: {"container_type": (list, dict)}
 }
 
 # 导入流水线步骤
@@ -814,17 +824,124 @@ class ProcessingOrchestrator:
         """检查步骤是否已有可用输出。"""
         return self._get_existing_step_output(step) is not None
 
+    def _inspect_step_output(self, step: ProcessingStep, output_path: Optional[Path]) -> Dict[str, Any]:
+        """检查步骤输出文件是否可用，以及是否满足基础结构要求。"""
+        if not output_path:
+            return {
+                "valid": False,
+                "reason": "missing_output",
+                "issues": ["missing_output"],
+                "item_count": 0,
+                "required_fields_present": None
+            }
+
+        if output_path.suffix.lower() != ".json":
+            return {
+                "valid": True,
+                "reason": "non_json_output",
+                "issues": [],
+                "item_count": None,
+                "required_fields_present": None
+            }
+
+        try:
+            with open(output_path, "r", encoding="utf-8") as file:
+                payload = json.load(file)
+        except (OSError, json.JSONDecodeError) as exc:
+            return {
+                "valid": False,
+                "reason": "invalid_json",
+                "issues": [f"invalid_json:{exc}"],
+                "item_count": 0,
+                "required_fields_present": False
+            }
+
+        expected_type = STEP_OUTPUT_REQUIREMENTS.get(step, {}).get("container_type")
+        if expected_type and not isinstance(payload, expected_type):
+            expected_name = (
+                [item.__name__ for item in expected_type]
+                if isinstance(expected_type, tuple) else expected_type.__name__
+            )
+            return {
+                "valid": False,
+                "reason": "unexpected_container_type",
+                "issues": [f"unexpected_container_type:{expected_name}"],
+                "item_count": 0,
+                "required_fields_present": False
+            }
+
+        issues = []
+        required_fields_present = None
+
+        if isinstance(payload, list):
+            item_count = len(payload)
+            if payload and not all(isinstance(item, dict) for item in payload):
+                issues.append("non_object_items")
+            if output_path.name == "clips_metadata.json" and payload:
+                required_fields = {"video_path", "status", "duration_seconds"}
+                required_fields_present = all(required_fields.issubset(item.keys()) for item in payload if isinstance(item, dict))
+                if not required_fields_present:
+                    issues.append("missing_required_clip_metadata_fields")
+            elif payload:
+                required_fields_present = True
+        elif isinstance(payload, dict):
+            item_count = len(payload)
+            if output_path.name == "step6_video_output.json":
+                required_fields = {"clips_generated", "collections_generated"}
+                required_fields_present = required_fields.issubset(payload.keys())
+                if not required_fields_present:
+                    issues.append("missing_required_step6_summary_fields")
+            else:
+                required_fields_present = True
+        else:
+            item_count = 1
+
+        if item_count == 0:
+            issues.append("empty_output")
+
+        return {
+            "valid": len(issues) == 0 or issues == ["empty_output"],
+            "reason": "ok" if len(issues) == 0 else ("warning" if issues == ["empty_output"] else "invalid_content"),
+            "issues": issues,
+            "item_count": item_count,
+            "required_fields_present": required_fields_present
+        }
+
+    def _get_step_recommendation(
+        self,
+        status: str,
+        missing_dependencies: List[str],
+        output_validation: Dict[str, Any]
+    ) -> str:
+        """为步骤给出下一步建议。"""
+        if status == "failed":
+            return "retry_step"
+        if status == "running":
+            return "wait_for_completion"
+        if status == "blocked":
+            return f"complete_dependencies:{','.join(missing_dependencies)}"
+        if status == "invalid_output":
+            return "regenerate_output"
+        if output_validation.get("issues") == ["empty_output"]:
+            return "review_empty_output"
+        if status == "pending":
+            return "ready_to_run"
+        return "no_action_needed"
+
     def get_step_health_status(self, step: ProcessingStep) -> Dict[str, Any]:
         """获取单个步骤/模块的健康状态。"""
         existing_output = self._get_existing_step_output(step)
         required_steps = STEP_DEPENDENCIES.get(step, [])
         missing_dependencies = [req_step.value for req_step in required_steps if not self._step_has_output(req_step)]
         runtime_status = self.step_status.get(step.value, {}).get("status")
+        output_validation = self._inspect_step_output(step, existing_output)
         
         if runtime_status == "failed":
             status = "failed"
         elif runtime_status == "running":
             status = "running"
+        elif existing_output and not output_validation["valid"]:
+            status = "invalid_output"
         elif existing_output and not missing_dependencies:
             status = "completed"
         elif missing_dependencies:
@@ -836,9 +953,13 @@ class ProcessingOrchestrator:
             "step": step.value,
             "display_name": step.value.replace("_", " "),
             "status": status,
+            "can_execute": status == "pending" and not missing_dependencies,
+            "can_retry": status in {"failed", "invalid_output"},
             "has_output": existing_output is not None,
             "output_path": str(existing_output) if existing_output else None,
+            "output_validation": output_validation,
             "missing_dependencies": missing_dependencies,
+            "recommendation": self._get_step_recommendation(status, missing_dependencies, output_validation),
             "runtime_details": self.step_status.get(step.value, {})
         }
 
@@ -859,8 +980,11 @@ class ProcessingOrchestrator:
             "total_steps": len(step_checks),
             "completed_steps": len([item for item in step_checks if item["status"] == "completed"]),
             "blocked_steps": len([item for item in step_checks if item["status"] == "blocked"]),
+            "pending_steps": len([item for item in step_checks if item["status"] == "pending"]),
             "failed_steps": len([item for item in step_checks if item["status"] == "failed"]),
+            "invalid_steps": len([item for item in step_checks if item["status"] == "invalid_output"]),
             "running_steps": len([item for item in step_checks if item["status"] == "running"]),
+            "ready_steps": [item["step"] for item in step_checks if item["can_execute"]],
             "steps": step_checks
         }
 
@@ -870,12 +994,14 @@ class ProcessingOrchestrator:
         issues = []
         
         for step_status in summary["steps"]:
-            if step_status["status"] in {"blocked", "failed"}:
+            if step_status["status"] in {"blocked", "failed", "invalid_output"}:
                 issues.append({
                     "step": step_status["step"],
                     "status": step_status["status"],
                     "missing_dependencies": step_status["missing_dependencies"],
-                    "output_path": step_status["output_path"]
+                    "output_path": step_status["output_path"],
+                    "output_issues": step_status["output_validation"]["issues"],
+                    "recommendation": step_status["recommendation"]
                 })
         
         summary["valid"] = len(issues) == 0
