@@ -155,5 +155,5 @@ def process_import_task(self, project_id: str, video_path: str, srt_file_path: O
         try:
             db.close()
         except Exception:
-            pass
+            logger.debug("关闭数据库连接时出错")
 
